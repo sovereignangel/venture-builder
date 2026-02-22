@@ -1,0 +1,37 @@
+name: Build Venture PoC
+
+on:
+  repository_dispatch:
+    types: [build-venture]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run build script
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          GITHUB_OWNER: ${{ secrets.GITHUB_OWNER }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          INTERNAL_API_SECRET: ${{ secrets.INTERNAL_API_SECRET }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CALLBACK_URL: ${{ github.event.client_payload.callbackUrl }}
+          VENTURE_UID: ${{ github.event.client_payload.uid }}
+          VENTURE_ID: ${{ github.event.client_payload.ventureId }}
+          VENTURE_SPEC: ${{ toJSON(github.event.client_payload.spec) }}
+          CHAT_ID: ${{ github.event.client_payload.chatId }}
+        run: npx tsx src/build.ts
