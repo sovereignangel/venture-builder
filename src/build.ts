@@ -14,7 +14,11 @@ const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN
 const uid = process.env.VENTURE_UID!
 const ventureId = process.env.VENTURE_ID!
 const spec = JSON.parse(process.env.VENTURE_SPEC || '{}')
+const prd = JSON.parse(process.env.VENTURE_PRD || 'null')
 const chatId = process.env.CHAT_ID
+const eventType = process.env.EVENT_TYPE || 'build-venture'
+const existingRepoName = process.env.REPO_NAME || ''
+const iterateChanges = process.env.ITERATE_CHANGES || ''
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -47,7 +51,23 @@ async function sendTelegram(text: string) {
   }
 }
 
-function buildCodePrompt(spec: Record<string, unknown>): string {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function buildCodePrompt(spec: Record<string, any>, prd: Record<string, any> | null): string {
+  // If we have a PRD, use it for a richer prompt
+  const prdSection = prd ? `
+PRD:
+  Project Name: ${prd.projectName}
+  Features:
+${(prd.features || []).map((f: { priority: string; name: string; description: string }) => `    [${f.priority}] ${f.name}: ${f.description}`).join('\n')}
+  Data Schema:
+${prd.dataSchema || '  (none specified)'}
+  User Flows:
+${(prd.userFlows || []).map((f: string, i: number) => `    Flow ${i + 1}: ${f}`).join('\n')}
+  Design Notes: ${prd.designNotes || 'Modern dark SaaS aesthetic'}
+  Success Metrics:
+${(prd.successMetrics || []).map((m: string) => `    - ${m}`).join('\n')}
+` : ''
+
   return `Generate a complete proof-of-concept web application. Output ALL files needed to run this locally and deploy to Vercel.
 
 PROJECT: ${spec.name}
@@ -55,7 +75,7 @@ DESCRIPTION: ${spec.oneLiner}
 PROBLEM: ${spec.problem}
 CUSTOMER: ${spec.targetCustomer}
 SOLUTION: ${spec.solution}
-
+${prdSection}
 MVP FEATURES:
 ${(spec.mvpFeatures as string[])?.map((f: string, i: number) => `${i + 1}. ${f}`).join('\n') || 'Basic landing page with core feature'}
 
@@ -73,6 +93,7 @@ REQUIREMENTS:
 7. Make it deployable to Vercel with zero config
 8. Use clean, modern design — dark or light theme, professional typography
 9. Include a pricing section on the landing page based on the revenue model
+10. Follow the PRD's data schema and user flows if provided
 
 OUTPUT FORMAT:
 For each file, use this exact format:
@@ -82,6 +103,34 @@ For each file, use this exact format:
 === END FILE ===
 
 Generate a minimal but functional and visually polished application. Focus on the core feature working end-to-end.`
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function buildIteratePrompt(spec: Record<string, any>, prd: Record<string, any> | null, changes: string, existingFiles: Array<{ path: string; content: string }>): string {
+  const filesList = existingFiles.map(f => `- ${f.path}`).join('\n')
+
+  return `You are modifying an existing proof-of-concept web application. The user wants these changes:
+
+CHANGE REQUEST: ${changes}
+
+PROJECT: ${spec.name}
+DESCRIPTION: ${spec.oneLiner}
+
+EXISTING FILES:
+${filesList}
+
+${prd ? `PRD: ${prd.projectName}\nDesign: ${prd.designNotes || 'Modern dark SaaS'}` : ''}
+
+Only output the files that need to be MODIFIED or CREATED. Do not output unchanged files.
+
+OUTPUT FORMAT:
+For each modified/new file, use this exact format:
+
+=== FILE: path/to/file.tsx ===
+[complete file contents]
+=== END FILE ===
+
+Keep changes minimal. Only modify what's needed for the requested change.`
 }
 
 function parseGeneratedFiles(text: string): Array<{ path: string; content: string }> {
@@ -94,173 +143,335 @@ function parseGeneratedFiles(text: string): Array<{ path: string; content: strin
   return files
 }
 
-// ─── Main Build Pipeline ───────────────────────────────────────────────────────
+async function getRepoFiles(octokit: Octokit, repoName: string): Promise<Array<{ path: string; content: string }>> {
+  try {
+    const { data: tree } = await octokit.git.getTree({
+      owner: GITHUB_OWNER,
+      repo: repoName,
+      tree_sha: 'main',
+      recursive: 'true',
+    })
 
-async function main() {
+    const files: Array<{ path: string; content: string }> = []
+    for (const item of tree.tree) {
+      if (item.type === 'blob' && item.path && !item.path.includes('node_modules') && !item.path.includes('.next')) {
+        try {
+          const { data } = await octokit.repos.getContent({
+            owner: GITHUB_OWNER,
+            repo: repoName,
+            path: item.path,
+          })
+          if ('content' in data && data.content) {
+            files.push({
+              path: item.path,
+              content: Buffer.from(data.content, 'base64').toString('utf-8'),
+            })
+          }
+        } catch {
+          // Skip files we can't read
+        }
+      }
+    }
+    return files
+  } catch {
+    return []
+  }
+}
+
+// ─── Build Pipeline (New Repo) ────────────────────────────────────────────────
+
+async function buildNew() {
   console.log(`Building venture: ${spec.name} (${ventureId})`)
 
   const octokit = new Octokit({ auth: GITHUB_TOKEN })
 
-  try {
-    // Step 1: Generate code with Claude
-    console.log('Step 1: Generating code with Claude...')
-    await updateCallback({ status: 'generating' })
+  // Step 1: Generate code with Claude
+  console.log('Step 1: Generating code with Claude...')
+  await updateCallback({ status: 'generating' })
 
-    const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY })
-    const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-5-20250929',
-      max_tokens: 16000,
-      messages: [{ role: 'user', content: buildCodePrompt(spec) }],
-    })
+  const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY })
+  const response = await anthropic.messages.create({
+    model: 'claude-sonnet-4-5-20250929',
+    max_tokens: 16000,
+    messages: [{ role: 'user', content: buildCodePrompt(spec, prd) }],
+  })
 
-    const responseText = response.content[0].type === 'text' ? response.content[0].text : ''
-    const files = parseGeneratedFiles(responseText)
+  const responseText = response.content[0].type === 'text' ? response.content[0].text : ''
+  const files = parseGeneratedFiles(responseText)
 
-    if (files.length === 0) {
-      throw new Error('No files generated from Claude response')
-    }
+  if (files.length === 0) {
+    throw new Error('No files generated from Claude response')
+  }
 
-    console.log(`Generated ${files.length} files`)
+  console.log(`Generated ${files.length} files`)
 
-    // Step 2: Create GitHub repo
-    console.log('Step 2: Creating GitHub repo...')
-    await updateCallback({ status: 'pushing' })
+  // Step 2: Create GitHub repo
+  console.log('Step 2: Creating GitHub repo...')
+  await updateCallback({ status: 'pushing' })
 
-    const repoName = `venture-${(spec.name as string).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-+$/, '')}-poc`
+  const repoName = prd?.projectName
+    ? `venture-${prd.projectName}-poc`
+    : `venture-${(spec.name as string).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-+$/, '')}-poc`
 
-    const { data: repo } = await octokit.repos.create({
-      name: repoName,
-      description: spec.oneLiner as string,
-      private: false,
-      auto_init: true,
-    })
+  const { data: repo } = await octokit.repos.create({
+    name: repoName,
+    description: spec.oneLiner as string,
+    private: false,
+    auto_init: true,
+  })
 
-    console.log(`Repo created: ${repo.html_url}`)
+  console.log(`Repo created: ${repo.html_url}`)
 
-    // Step 3: Push files via Git tree API
-    console.log('Step 3: Pushing files...')
+  // Step 3: Push files via Git tree API
+  console.log('Step 3: Pushing files...')
 
-    // Get default branch latest commit
-    const { data: ref } = await octokit.git.getRef({
-      owner: GITHUB_OWNER,
-      repo: repoName,
-      ref: 'heads/main',
-    })
-    const latestCommitSha = ref.object.sha
+  const { data: ref } = await octokit.git.getRef({
+    owner: GITHUB_OWNER,
+    repo: repoName,
+    ref: 'heads/main',
+  })
+  const latestCommitSha = ref.object.sha
 
-    const { data: latestCommit } = await octokit.git.getCommit({
-      owner: GITHUB_OWNER,
-      repo: repoName,
-      commit_sha: latestCommitSha,
-    })
+  const { data: latestCommit } = await octokit.git.getCommit({
+    owner: GITHUB_OWNER,
+    repo: repoName,
+    commit_sha: latestCommitSha,
+  })
 
-    // Create blobs for all files
-    const treeItems = await Promise.all(
-      files.map(async (file) => {
-        const { data: blob } = await octokit.git.createBlob({
-          owner: GITHUB_OWNER,
-          repo: repoName,
-          content: Buffer.from(file.content).toString('base64'),
-          encoding: 'base64',
-        })
-        return {
-          path: file.path,
-          mode: '100644' as const,
-          type: 'blob' as const,
-          sha: blob.sha,
-        }
+  const treeItems = await Promise.all(
+    files.map(async (file) => {
+      const { data: blob } = await octokit.git.createBlob({
+        owner: GITHUB_OWNER,
+        repo: repoName,
+        content: Buffer.from(file.content).toString('base64'),
+        encoding: 'base64',
       })
-    )
-
-    // Create tree
-    const { data: newTree } = await octokit.git.createTree({
-      owner: GITHUB_OWNER,
-      repo: repoName,
-      base_tree: latestCommit.tree.sha,
-      tree: treeItems,
-    })
-
-    // Create commit
-    const { data: newCommit } = await octokit.git.createCommit({
-      owner: GITHUB_OWNER,
-      repo: repoName,
-      message: `Initial PoC generated by Thesis Engine\n\n${spec.oneLiner}`,
-      tree: newTree.sha,
-      parents: [latestCommitSha],
-    })
-
-    // Update ref
-    await octokit.git.updateRef({
-      owner: GITHUB_OWNER,
-      repo: repoName,
-      ref: 'heads/main',
-      sha: newCommit.sha,
-    })
-
-    console.log('Files pushed successfully')
-
-    // Step 4: Deploy via Vercel
-    let previewUrl = `https://${repoName}.vercel.app`
-
-    if (VERCEL_TOKEN) {
-      console.log('Step 4: Creating Vercel project...')
-      await updateCallback({ status: 'deploying' })
-
-      try {
-        const vercelRes = await fetch('https://api.vercel.com/v10/projects', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${VERCEL_TOKEN}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            name: repoName,
-            framework: 'nextjs',
-            gitRepository: {
-              type: 'github',
-              repo: `${GITHUB_OWNER}/${repoName}`,
-            },
-          }),
-        })
-
-        if (vercelRes.ok) {
-          const project = await vercelRes.json()
-          previewUrl = `https://${project.name}.vercel.app`
-          console.log(`Vercel project created: ${previewUrl}`)
-        } else {
-          const errText = await vercelRes.text()
-          console.warn(`Vercel project creation failed: ${errText}`)
-          console.warn('Repo is ready — deploy manually from Vercel dashboard')
-        }
-      } catch (vercelErr) {
-        console.warn('Vercel deployment failed:', vercelErr)
+      return {
+        path: file.path,
+        mode: '100644' as const,
+        type: 'blob' as const,
+        sha: blob.sha,
       }
-    } else {
-      console.log('Step 4: Skipped (no VERCEL_TOKEN)')
-    }
-
-    // Step 5: Success callback
-    console.log('Step 5: Sending success callback...')
-    await updateCallback({
-      status: 'live',
-      repoUrl: repo.html_url,
-      previewUrl,
-      repoName,
-      filesGenerated: files.length,
     })
+  )
 
-    // Send Telegram notification
-    await sendTelegram([
-      `*${spec.name} is live!*`,
-      '',
-      `Preview: ${previewUrl}`,
-      `GitHub: ${repo.html_url}`,
-      '',
-      `_${files.length} files generated_`,
-    ].join('\n'))
+  const { data: newTree } = await octokit.git.createTree({
+    owner: GITHUB_OWNER,
+    repo: repoName,
+    base_tree: latestCommit.tree.sha,
+    tree: treeItems,
+  })
 
-    console.log('Build complete!')
+  const { data: newCommit } = await octokit.git.createCommit({
+    owner: GITHUB_OWNER,
+    repo: repoName,
+    message: `Initial PoC generated by Thesis Engine\n\n${spec.oneLiner}`,
+    tree: newTree.sha,
+    parents: [latestCommitSha],
+  })
 
+  await octokit.git.updateRef({
+    owner: GITHUB_OWNER,
+    repo: repoName,
+    ref: 'heads/main',
+    sha: newCommit.sha,
+  })
+
+  console.log('Files pushed successfully')
+
+  // Step 4: Deploy via Vercel
+  let previewUrl = `https://${repoName}.vercel.app`
+
+  if (VERCEL_TOKEN) {
+    console.log('Step 4: Creating Vercel project...')
+    await updateCallback({ status: 'deploying' })
+
+    try {
+      const vercelRes = await fetch('https://api.vercel.com/v10/projects', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${VERCEL_TOKEN}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          name: repoName,
+          framework: 'nextjs',
+          gitRepository: {
+            type: 'github',
+            repo: `${GITHUB_OWNER}/${repoName}`,
+          },
+        }),
+      })
+
+      if (vercelRes.ok) {
+        const project = await vercelRes.json()
+        previewUrl = `https://${project.name}.vercel.app`
+        console.log(`Vercel project created: ${previewUrl}`)
+      } else {
+        const errText = await vercelRes.text()
+        console.warn(`Vercel project creation failed: ${errText}`)
+      }
+    } catch (vercelErr) {
+      console.warn('Vercel deployment failed:', vercelErr)
+    }
+  } else {
+    console.log('Step 4: Skipped (no VERCEL_TOKEN)')
+  }
+
+  // Step 5: Success callback
+  console.log('Step 5: Sending success callback...')
+  await updateCallback({
+    status: 'live',
+    repoUrl: repo.html_url,
+    previewUrl,
+    repoName,
+    filesGenerated: files.length,
+  })
+
+  await sendTelegram([
+    `*${spec.name} is live!*`,
+    '',
+    `Preview: ${previewUrl}`,
+    `GitHub: ${repo.html_url}`,
+    '',
+    `_${files.length} files generated_`,
+  ].join('\n'))
+
+  console.log('Build complete!')
+}
+
+// ─── Iterate Pipeline (Existing Repo) ─────────────────────────────────────────
+
+async function iterateExisting() {
+  console.log(`Iterating on: ${spec.name} (${existingRepoName})`)
+  console.log(`Changes: ${iterateChanges}`)
+
+  const octokit = new Octokit({ auth: GITHUB_TOKEN })
+
+  // Step 1: Fetch existing repo files for context
+  console.log('Step 1: Reading existing codebase...')
+  await updateCallback({ status: 'generating' })
+
+  const existingFiles = await getRepoFiles(octokit, existingRepoName)
+  console.log(`Read ${existingFiles.length} files from ${existingRepoName}`)
+
+  // Step 2: Generate changes with Claude
+  console.log('Step 2: Generating changes with Claude...')
+
+  const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY })
+  const response = await anthropic.messages.create({
+    model: 'claude-sonnet-4-5-20250929',
+    max_tokens: 16000,
+    messages: [{ role: 'user', content: buildIteratePrompt(spec, prd, iterateChanges, existingFiles) }],
+  })
+
+  const responseText = response.content[0].type === 'text' ? response.content[0].text : ''
+  const files = parseGeneratedFiles(responseText)
+
+  if (files.length === 0) {
+    throw new Error('No file changes generated from Claude response')
+  }
+
+  console.log(`Generated ${files.length} modified files`)
+
+  // Step 3: Push changes to existing repo
+  console.log('Step 3: Pushing changes...')
+  await updateCallback({ status: 'pushing' })
+
+  const { data: ref } = await octokit.git.getRef({
+    owner: GITHUB_OWNER,
+    repo: existingRepoName,
+    ref: 'heads/main',
+  })
+  const latestCommitSha = ref.object.sha
+
+  const { data: latestCommit } = await octokit.git.getCommit({
+    owner: GITHUB_OWNER,
+    repo: existingRepoName,
+    commit_sha: latestCommitSha,
+  })
+
+  const treeItems = await Promise.all(
+    files.map(async (file) => {
+      const { data: blob } = await octokit.git.createBlob({
+        owner: GITHUB_OWNER,
+        repo: existingRepoName,
+        content: Buffer.from(file.content).toString('base64'),
+        encoding: 'base64',
+      })
+      return {
+        path: file.path,
+        mode: '100644' as const,
+        type: 'blob' as const,
+        sha: blob.sha,
+      }
+    })
+  )
+
+  const { data: newTree } = await octokit.git.createTree({
+    owner: GITHUB_OWNER,
+    repo: existingRepoName,
+    base_tree: latestCommit.tree.sha,
+    tree: treeItems,
+  })
+
+  const { data: newCommit } = await octokit.git.createCommit({
+    owner: GITHUB_OWNER,
+    repo: existingRepoName,
+    message: `Iterate: ${iterateChanges.slice(0, 72)}\n\nGenerated by Thesis Engine`,
+    tree: newTree.sha,
+    parents: [latestCommitSha],
+  })
+
+  await octokit.git.updateRef({
+    owner: GITHUB_OWNER,
+    repo: existingRepoName,
+    ref: 'heads/main',
+    sha: newCommit.sha,
+  })
+
+  console.log('Changes pushed — Vercel will auto-redeploy')
+
+  // Step 4: Success callback
+  await updateCallback({ status: 'deploying' })
+
+  const repoUrl = `https://github.com/${GITHUB_OWNER}/${existingRepoName}`
+  const previewUrl = `https://${existingRepoName}.vercel.app`
+
+  // Small delay for Vercel to pick up the deploy
+  await new Promise(resolve => setTimeout(resolve, 3000))
+
+  await updateCallback({
+    status: 'live',
+    repoUrl,
+    previewUrl,
+    repoName: existingRepoName,
+    filesGenerated: files.length,
+  })
+
+  await sendTelegram([
+    `*${spec.name} updated!*`,
+    '',
+    `_"${iterateChanges}"_`,
+    '',
+    `Preview: ${previewUrl}`,
+    `GitHub: ${repoUrl}`,
+    '',
+    `_${files.length} files modified_`,
+  ].join('\n'))
+
+  console.log('Iteration complete!')
+}
+
+// ─── Main ─────────────────────────────────────────────────────────────────────
+
+async function main() {
+  try {
+    if (eventType === 'iterate-venture') {
+      await iterateExisting()
+    } else {
+      await buildNew()
+    }
   } catch (error) {
     const msg = error instanceof Error ? error.message : 'Unknown error'
     console.error('Build failed:', msg)

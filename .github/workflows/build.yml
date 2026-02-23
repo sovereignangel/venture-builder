@@ -2,12 +2,12 @@ name: Build Venture PoC
 
 on:
   repository_dispatch:
-    types: [build-venture]
+    types: [build-venture, iterate-venture]
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
@@ -21,9 +21,13 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
       - name: Run build script
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           GITHUB_OWNER: ${{ secrets.GITHUB_OWNER }}
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
@@ -33,5 +37,9 @@ jobs:
           VENTURE_UID: ${{ github.event.client_payload.uid }}
           VENTURE_ID: ${{ github.event.client_payload.ventureId }}
           VENTURE_SPEC: ${{ toJSON(github.event.client_payload.spec) }}
+          VENTURE_PRD: ${{ toJSON(github.event.client_payload.prd) }}
           CHAT_ID: ${{ github.event.client_payload.chatId }}
+          EVENT_TYPE: ${{ github.event.action }}
+          REPO_NAME: ${{ github.event.client_payload.repoName }}
+          ITERATE_CHANGES: ${{ github.event.client_payload.changes }}
         run: npx tsx src/build.ts
