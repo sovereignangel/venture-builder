@@ -371,9 +371,6 @@ async function buildNew() {
         // Step 4b: Assign custom domain (e.g. projectname.loricorpuz.com)
         const subdomain = prd?.projectName || (spec.name as string).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-+$/, '')
         customDomain = await assignCustomDomain(repoName, subdomain)
-        if (customDomain) {
-          previewUrl = `https://${customDomain}`
-        }
       } else {
         const errText = await vercelRes.text()
         console.warn(`Vercel project creation failed: ${errText}`)
@@ -396,16 +393,20 @@ async function buildNew() {
     filesGenerated: files.length,
   })
 
-  await sendTelegram([
+  const telegramLines = [
     `*${spec.name} is live!*`,
     '',
-    `${customDomain ? `Live: https://${customDomain}` : `Preview: ${previewUrl}`}`,
+    `Vercel: ${previewUrl}`,
+  ]
+  if (customDomain) {
+    telegramLines.push(`Domain: https://${customDomain} (SSL may take a few min)`)
+  }
+  telegramLines.push(
     `GitHub: ${repo.html_url}`,
     '',
     `_${files.length} files generated_`,
-    '',
-    '_Refine with Claude Code locally for higher quality._',
-  ].join('\n'))
+  )
+  await sendTelegram(telegramLines.join('\n'))
 
   console.log('Build complete!')
 }
