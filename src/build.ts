@@ -1,7 +1,8 @@
-import { spawn } from 'node:child_process'
+import Anthropic from '@anthropic-ai/sdk'
 
 // ─── Config ────────────────────────────────────────────────────────────────────
 
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY!
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN!
 const GITHUB_OWNER = process.env.GITHUB_OWNER || 'sovereignangel'
 const VERCEL_TOKEN = process.env.VERCEL_TOKEN
@@ -71,30 +72,8 @@ async function sendTelegram(text: string) {
   }
 }
 
-// ─── Claude CLI helper ────────────────────────────────────────────────────────
-
-async function callClaude(prompt: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const proc = spawn('claude', ['-p', '--output-format', 'text'], {
-      stdio: ['pipe', 'pipe', 'pipe'],
-    })
-    let stdout = ''
-    let stderr = ''
-    proc.stdout.on('data', (d) => { stdout += d.toString() })
-    proc.stderr.on('data', (d) => { stderr += d.toString() })
-    proc.on('close', (code) => {
-      if (code !== 0) reject(new Error(`Claude CLI failed (exit ${code}): ${stderr}`))
-      else resolve(stdout)
-    })
-    proc.on('error', (err) => reject(new Error(`Claude CLI spawn error: ${err.message}`)))
-    proc.stdin.write(prompt)
-    proc.stdin.end()
-  })
-}
-
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function buildCodePrompt(spec: Record<string, any>, prd: Record<string, any> | null): string {
-  // If we have a PRD, use it for a richer prompt
   const prdSection = prd ? `
 PRD:
   Project Name: ${prd.projectName}
@@ -213,13 +192,11 @@ async function getRepoFiles(repoName: string): Promise<Array<{ path: string; con
 // ─── Git Tree Push (shared between build & iterate) ──────────────────────────
 
 async function pushFilesToRepo(repoName: string, files: Array<{ path: string; content: string }>, commitMessage: string) {
-  // Get latest commit on main
   const ref = await gh(`/repos/${GITHUB_OWNER}/${repoName}/git/ref/heads/main`)
   const latestCommitSha = ref.object.sha
 
   const latestCommit = await gh(`/repos/${GITHUB_OWNER}/${repoName}/git/commits/${latestCommitSha}`)
 
-  // Create blobs for all files
   const treeItems = await Promise.all(
     files.map(async (file) => {
       const blob = await gh(`/repos/${GITHUB_OWNER}/${repoName}/git/blobs`, {
@@ -238,7 +215,6 @@ async function pushFilesToRepo(repoName: string, files: Array<{ path: string; co
     })
   )
 
-  // Create tree
   const newTree = await gh(`/repos/${GITHUB_OWNER}/${repoName}/git/trees`, {
     method: 'POST',
     body: JSON.stringify({
@@ -247,7 +223,6 @@ async function pushFilesToRepo(repoName: string, files: Array<{ path: string; co
     }),
   })
 
-  // Create commit
   const newCommit = await gh(`/repos/${GITHUB_OWNER}/${repoName}/git/commits`, {
     method: 'POST',
     body: JSON.stringify({
@@ -257,7 +232,6 @@ async function pushFilesToRepo(repoName: string, files: Array<{ path: string; co
     }),
   })
 
-  // Update ref
   await gh(`/repos/${GITHUB_OWNER}/${repoName}/git/refs/heads/main`, {
     method: 'PATCH',
     body: JSON.stringify({ sha: newCommit.sha }),
@@ -277,7 +251,14 @@ async function buildNew() {
   console.log('Step 1: Generating code with Claude...')
   await updateCallback({ status: 'generating' })
 
-  const responseText = await callClaude(buildCodePrompt(spec, prd))
+  const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY })
+  const response = await anthropic.messages.create({
+    model: 'claude-sonnet-4-5-20250929',
+    max_tokens: 16000,
+    messages: [{ role: 'user', content: buildCodePrompt(spec, prd) }],
+  })
+
+  const responseText = response.content[0].type === 'text' ? response.content[0].text : ''
   const files = parseGeneratedFiles(responseText)
 
   if (files.length === 0) {
@@ -395,7 +376,14 @@ async function iterateExisting() {
   // Step 2: Generate changes with Claude
   console.log('Step 2: Generating changes with Claude...')
 
-  const responseText = await callClaude(buildIteratePrompt(spec, prd, iterateChanges, existingFiles))
+  const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY })
+  const response = await anthropic.messages.create({
+    model: 'claude-sonnet-4-5-20250929',
+    max_tokens: 16000,
+    messages: [{ role: 'user', content: buildIteratePrompt(spec, prd, iterateChanges, existingFiles) }],
+  })
+
+  const responseText = response.content[0].type === 'text' ? response.content[0].text : ''
   const files = parseGeneratedFiles(responseText)
 
   if (files.length === 0) {
@@ -417,7 +405,6 @@ async function iterateExisting() {
   const repoUrl = `https://github.com/${GITHUB_OWNER}/${existingRepoName}`
   const previewUrl = `https://${existingRepoName}.vercel.app`
 
-  // Small delay for Vercel to pick up the deploy
   await new Promise(resolve => setTimeout(resolve, 3000))
 
   await updateCallback({
