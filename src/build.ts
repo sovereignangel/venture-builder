@@ -164,12 +164,17 @@ For each modified/new file, use this exact format:
 Keep changes minimal. Only modify what's needed for the requested change.`
 }
 
+function stripMarkdownFences(content: string): string {
+  // Remove leading ```lang and trailing ``` that LLMs often wrap code in
+  return content.replace(/^```[\w]*\n?/, '').replace(/\n?```\s*$/, '')
+}
+
 function parseGeneratedFiles(text: string): Array<{ path: string; content: string }> {
   const files: Array<{ path: string; content: string }> = []
   const regex = /=== FILE: (.+?) ===\n([\s\S]*?)(?==== END FILE ===)/g
   let match
   while ((match = regex.exec(text)) !== null) {
-    files.push({ path: match[1].trim(), content: match[2].trim() })
+    files.push({ path: match[1].trim(), content: stripMarkdownFences(match[2].trim()) })
   }
   return files
 }
