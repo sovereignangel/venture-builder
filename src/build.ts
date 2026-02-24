@@ -1,8 +1,7 @@
-import Anthropic from '@anthropic-ai/sdk'
+import { spawn } from 'node:child_process'
 
 // ─── Config ────────────────────────────────────────────────────────────────────
 
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY!
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN!
 const GITHUB_OWNER = process.env.GITHUB_OWNER || 'sovereignangel'
 const VERCEL_TOKEN = process.env.VERCEL_TOKEN
@@ -70,6 +69,27 @@ async function sendTelegram(text: string) {
   } catch (err) {
     console.error('Telegram send failed:', err)
   }
+}
+
+// ─── Claude CLI helper ────────────────────────────────────────────────────────
+
+async function callClaude(prompt: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn('claude', ['-p', '--output-format', 'text'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+    let stdout = ''
+    let stderr = ''
+    proc.stdout.on('data', (d) => { stdout += d.toString() })
+    proc.stderr.on('data', (d) => { stderr += d.toString() })
+    proc.on('close', (code) => {
+      if (code !== 0) reject(new Error(`Claude CLI failed (exit ${code}): ${stderr}`))
+      else resolve(stdout)
+    })
+    proc.on('error', (err) => reject(new Error(`Claude CLI spawn error: ${err.message}`)))
+    proc.stdin.write(prompt)
+    proc.stdin.end()
+  })
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -257,14 +277,7 @@ async function buildNew() {
   console.log('Step 1: Generating code with Claude...')
   await updateCallback({ status: 'generating' })
 
-  const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY })
-  const response = await anthropic.messages.create({
-    model: 'claude-sonnet-4-5-20250929',
-    max_tokens: 16000,
-    messages: [{ role: 'user', content: buildCodePrompt(spec, prd) }],
-  })
-
-  const responseText = response.content[0].type === 'text' ? response.content[0].text : ''
+  const responseText = await callClaude(buildCodePrompt(spec, prd))
   const files = parseGeneratedFiles(responseText)
 
   if (files.length === 0) {
@@ -382,14 +395,7 @@ async function iterateExisting() {
   // Step 2: Generate changes with Claude
   console.log('Step 2: Generating changes with Claude...')
 
-  const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY })
-  const response = await anthropic.messages.create({
-    model: 'claude-sonnet-4-5-20250929',
-    max_tokens: 16000,
-    messages: [{ role: 'user', content: buildIteratePrompt(spec, prd, iterateChanges, existingFiles) }],
-  })
-
-  const responseText = response.content[0].type === 'text' ? response.content[0].text : ''
+  const responseText = await callClaude(buildIteratePrompt(spec, prd, iterateChanges, existingFiles))
   const files = parseGeneratedFiles(responseText)
 
   if (files.length === 0) {
