@@ -9,6 +9,7 @@ const VERCEL_TOKEN = process.env.VERCEL_TOKEN
 const CALLBACK_URL = process.env.CALLBACK_URL
 const INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN
+const CUSTOM_DOMAIN_BASE = process.env.CUSTOM_DOMAIN_BASE || 'loricorpuz.com'
 
 const uid = process.env.VENTURE_UID!
 const ventureId = process.env.VENTURE_ID!
@@ -199,6 +200,37 @@ async function getRepoFiles(repoName: string): Promise<Array<{ path: string; con
   }
 }
 
+// ─── Vercel Domain Helper ────────────────────────────────────────────────────
+
+async function assignCustomDomain(projectName: string, subdomain: string): Promise<string | null> {
+  if (!VERCEL_TOKEN) return null
+
+  const customDomain = `${subdomain}.${CUSTOM_DOMAIN_BASE}`
+
+  try {
+    const domainRes = await fetch(`https://api.vercel.com/v10/projects/${projectName}/domains`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${VERCEL_TOKEN}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ name: customDomain }),
+    })
+
+    if (domainRes.ok) {
+      console.log(`Custom domain assigned: ${customDomain}`)
+      return customDomain
+    } else {
+      const errText = await domainRes.text()
+      console.warn(`Custom domain assignment failed: ${errText}`)
+      return null
+    }
+  } catch (err) {
+    console.warn('Custom domain assignment failed:', err)
+    return null
+  }
+}
+
 // ─── Git Tree Push (shared between build & iterate) ──────────────────────────
 
 async function pushFilesToRepo(repoName: string, files: Array<{ path: string; content: string }>, commitMessage: string) {
@@ -303,6 +335,7 @@ async function buildNew() {
 
   // Step 4: Deploy via Vercel
   let previewUrl = `https://${repoName}.vercel.app`
+  let customDomain: string | null = null
 
   if (VERCEL_TOKEN) {
     console.log('Step 4: Creating Vercel project...')
@@ -329,6 +362,13 @@ async function buildNew() {
         const project = await vercelRes.json()
         previewUrl = `https://${project.name}.vercel.app`
         console.log(`Vercel project created: ${previewUrl}`)
+
+        // Step 4b: Assign custom domain (e.g. projectname.loricorpuz.com)
+        const subdomain = prd?.projectName || (spec.name as string).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-+$/, '')
+        customDomain = await assignCustomDomain(repoName, subdomain)
+        if (customDomain) {
+          previewUrl = `https://${customDomain}`
+        }
       } else {
         const errText = await vercelRes.text()
         console.warn(`Vercel project creation failed: ${errText}`)
@@ -346,6 +386,7 @@ async function buildNew() {
     status: 'live',
     repoUrl: repo.html_url,
     previewUrl,
+    customDomain,
     repoName,
     filesGenerated: files.length,
   })
@@ -353,7 +394,7 @@ async function buildNew() {
   await sendTelegram([
     `*${spec.name} is live!*`,
     '',
-    `Preview: ${previewUrl}`,
+    `${customDomain ? `Live: https://${customDomain}` : `Preview: ${previewUrl}`}`,
     `GitHub: ${repo.html_url}`,
     '',
     `_${files.length} files generated_`,
