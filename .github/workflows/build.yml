@@ -27,9 +27,8 @@ jobs:
       - name: Run build script
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          CLAUDE_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-          GITHUB_OWNER: ${{ secrets.GITHUB_OWNER }}
+          GITHUB_OWNER: sovereignangel
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           INTERNAL_API_SECRET: ${{ secrets.INTERNAL_API_SECRET }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -43,3 +42,4 @@ jobs:
           REPO_NAME: ${{ github.event.client_payload.repoName }}
           ITERATE_CHANGES: ${{ github.event.client_payload.changes }}
         run: npx tsx src/build.ts
+
