@@ -1,8 +1,8 @@
-import Anthropic from '@anthropic-ai/sdk'
+import { GoogleGenerativeAI } from '@google/generative-ai'
 
 // ─── Config ────────────────────────────────────────────────────────────────────
 
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY!
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY!
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN!
 const GITHUB_OWNER = process.env.GITHUB_OWNER || 'sovereignangel'
 const VERCEL_TOKEN = process.env.VERCEL_TOKEN
@@ -70,6 +70,16 @@ async function sendTelegram(text: string) {
   } catch (err) {
     console.error('Telegram send failed:', err)
   }
+}
+
+async function callGemini(prompt: string): Promise<string> {
+  const genAI = new GoogleGenerativeAI(GEMINI_API_KEY)
+  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' })
+  const result = await model.generateContent({
+    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    generationConfig: { maxOutputTokens: 65536 },
+  })
+  return result.response.text()
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -246,23 +256,19 @@ async function buildNew() {
   if (!GITHUB_TOKEN) {
     throw new Error('GITHUB_TOKEN (GH_PAT secret) is not configured')
   }
+  if (!GEMINI_API_KEY) {
+    throw new Error('GEMINI_API_KEY secret is not configured')
+  }
 
-  // Step 1: Generate code with Claude
-  console.log('Step 1: Generating code with Claude...')
+  // Step 1: Generate code with Gemini
+  console.log('Step 1: Generating code with Gemini...')
   await updateCallback({ status: 'generating' })
 
-  const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY })
-  const response = await anthropic.messages.create({
-    model: 'claude-sonnet-4-5-20250929',
-    max_tokens: 16000,
-    messages: [{ role: 'user', content: buildCodePrompt(spec, prd) }],
-  })
-
-  const responseText = response.content[0].type === 'text' ? response.content[0].text : ''
+  const responseText = await callGemini(buildCodePrompt(spec, prd))
   const files = parseGeneratedFiles(responseText)
 
   if (files.length === 0) {
-    throw new Error('No files generated from Claude response')
+    throw new Error('No files generated from Gemini response')
   }
 
   console.log(`Generated ${files.length} files`)
@@ -351,6 +357,8 @@ async function buildNew() {
     `GitHub: ${repo.html_url}`,
     '',
     `_${files.length} files generated_`,
+    '',
+    '_Refine with Claude Code locally for higher quality._',
   ].join('\n'))
 
   console.log('Build complete!')
@@ -365,6 +373,9 @@ async function iterateExisting() {
   if (!GITHUB_TOKEN) {
     throw new Error('GITHUB_TOKEN (GH_PAT secret) is not configured')
   }
+  if (!GEMINI_API_KEY) {
+    throw new Error('GEMINI_API_KEY secret is not configured')
+  }
 
   // Step 1: Fetch existing repo files for context
   console.log('Step 1: Reading existing codebase...')
@@ -373,21 +384,14 @@ async function iterateExisting() {
   const existingFiles = await getRepoFiles(existingRepoName)
   console.log(`Read ${existingFiles.length} files from ${existingRepoName}`)
 
-  // Step 2: Generate changes with Claude
-  console.log('Step 2: Generating changes with Claude...')
+  // Step 2: Generate changes with Gemini
+  console.log('Step 2: Generating changes with Gemini...')
 
-  const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY })
-  const response = await anthropic.messages.create({
-    model: 'claude-sonnet-4-5-20250929',
-    max_tokens: 16000,
-    messages: [{ role: 'user', content: buildIteratePrompt(spec, prd, iterateChanges, existingFiles) }],
-  })
-
-  const responseText = response.content[0].type === 'text' ? response.content[0].text : ''
+  const responseText = await callGemini(buildIteratePrompt(spec, prd, iterateChanges, existingFiles))
   const files = parseGeneratedFiles(responseText)
 
   if (files.length === 0) {
-    throw new Error('No file changes generated from Claude response')
+    throw new Error('No file changes generated from Gemini response')
   }
 
   console.log(`Generated ${files.length} modified files`)
