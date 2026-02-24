@@ -9,7 +9,6 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
-    "octokit": "^4.0.0",
     "tsx": "^4.19.0"
   }
 }
