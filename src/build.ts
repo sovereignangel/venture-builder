@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk'
-import { Octokit } from '@octokit/rest'
+import { Octokit } from 'octokit'
 
 // ─── Config ────────────────────────────────────────────────────────────────────
 
