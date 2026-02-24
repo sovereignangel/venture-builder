@@ -21,12 +21,9 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Install Claude Code CLI
-        run: npm install -g @anthropic-ai/claude-code
-
       - name: Run build script
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           GITHUB_OWNER: sovereignangel
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
