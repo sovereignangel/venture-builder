@@ -258,22 +258,35 @@ async function waitForVercelDeployment(
   const interval = opts.pollIntervalMs ?? 10_000      // 10 seconds
   const start = Date.now()
 
+  // Give Vercel time to pick up the GitHub push and queue a deployment
+  console.log(`Waiting 15s for Vercel to detect the push...`)
+  await new Promise(resolve => setTimeout(resolve, 15_000))
+
   console.log(`Polling Vercel deployment for "${projectName}" (up to ${maxWait / 1000}s)...`)
 
   while (Date.now() - start < maxWait) {
     try {
+      // Don't filter by target=production — initial auto-deployments from GitHub
+      // may not be tagged as production immediately
       const res = await fetch(
-        `https://api.vercel.com/v6/deployments?app=${encodeURIComponent(projectName)}&limit=1&target=production`,
+        `https://api.vercel.com/v6/deployments?app=${encodeURIComponent(projectName)}&limit=3`,
         { headers: { Authorization: `Bearer ${VERCEL_TOKEN}` } }
       )
 
       if (res.ok) {
         const data = await res.json()
-        const deployment = data.deployments?.[0]
+        const deployments = data.deployments || []
+
+        if (deployments.length === 0) {
+          console.log(`  No deployments found yet for "${projectName}"`)
+        }
+
+        // Check the most recent deployment (any target)
+        const deployment = deployments[0]
 
         if (deployment) {
           const state = deployment.readyState || deployment.state
-          console.log(`  Deployment ${deployment.uid}: ${state}`)
+          console.log(`  Deployment ${deployment.uid}: ${state} (target: ${deployment.target || 'none'})`)
 
           if (state === 'READY') {
             return { ready: true, url: `https://${deployment.url}` }
@@ -284,7 +297,8 @@ async function waitForVercelDeployment(
           // BUILDING, QUEUED, INITIALIZING — keep polling
         }
       } else {
-        console.warn(`  Vercel API returned ${res.status}`)
+        const errBody = await res.text()
+        console.warn(`  Vercel API returned ${res.status}: ${errBody}`)
       }
     } catch (err) {
       console.warn(`  Polling error:`, err)
