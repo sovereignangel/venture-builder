@@ -119,12 +119,22 @@ REQUIREMENTS:
 2. Use Tailwind CSS for styling
 3. Include a compelling landing page with the value proposition, hero section, feature highlights, and CTA
 4. Include a basic working demo of the core feature (even if mocked)
-5. Include package.json with all dependencies
+5. Include package.json with all dependencies — only use well-known, popular npm packages
 6. Include a README.md with setup instructions
 7. Make it deployable to Vercel with zero config
 8. Use clean, modern design — dark or light theme, professional typography
 9. Include a pricing section on the landing page based on the revenue model
 10. Follow the PRD's data schema and user flows if provided
+
+SECURITY REQUIREMENTS (mandatory):
+11. NEVER use eval(), Function(), or dangerouslySetInnerHTML
+12. NEVER hardcode API keys, tokens, or secrets — use environment variables
+13. Use parameterized queries for any database operations — no string concatenation in queries
+14. Validate and sanitize all user inputs on the server side
+15. Only import packages from well-known publishers (e.g., next, react, tailwindcss, zod, date-fns)
+16. Do NOT use deprecated or uncommon packages — stick to mainstream alternatives
+17. If using Supabase, use createClient from @supabase/supabase-js (NOT @supabase/auth-helpers-nextjs)
+18. Do NOT set experimental.serverActions in next.config — it is enabled by default in Next.js 14
 
 OUTPUT FORMAT:
 For each file, use this exact format:
